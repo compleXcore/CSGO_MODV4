@@ -1,0 +1,10 @@
+;nextmap.amxx		; displays next map in mapcycle
+;mapchooser.amxx		; allows to vote for next map
+CSM-SureliSistemv32.amxx
+timeleft.amxx		; displays time left on map
+
+böyle olması gerekiyor harita sistemi için
+
+restmenu.amxx		; restrict weapons menu
+
+Açılması gereken ikinci eklenti. Silah yasaklaması için bu açılmaz ise sunucuda çökme olur. Çünkü modelleri kaldırıyoruz modda bu modeller açılırsa çöker.

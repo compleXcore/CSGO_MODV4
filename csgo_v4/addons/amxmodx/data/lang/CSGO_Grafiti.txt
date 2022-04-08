@@ -1,0 +1,29 @@
+﻿[tr]
+RANDOM = Rastgele
+MENU_TITLE = Graffiti Seçim Menüsü
+SYMBOL = Sembol
+COLOUR = Renk
+NEXT_SYMBOL = Bir Sonraki Sembol
+BACK_SYMBOL = Bir Onceki Sembol
+NEXT_COLOUR = Bir Sonraki Renk
+BACK_COLOUR = Bir Onceki Renk
+EXIT = Çıkış
+WAIT_SPRITE = Graffiti Çizimi Yükleniyor [ %d Saniye ]
+REMOTE_GROUND = Uzak Zemin !
+NOVERTICALWALL = Bozuk Zemin !
+OVERFLOWING_GRAFFITI = Graffiti Taşıyor !
+
+[en]
+RANDOM = Random
+MENU_TITLE = Graffiti Selection Menu
+SYMBOL = Symbol
+COLOUR = Color
+NEXT_SYMBOL = Next Symbol
+BACK_SYMBOL = Previous Symbol
+NEXT_COLOUR = Next Color
+BACK_COLOUR = Previous Color
+EXIT = Exit
+WAIT_SPRITE = Loading Graffiti Drawing [ %d Second ]
+REMOTE_GROUND = Distant Distance !
+NOVERTICALWALL = You Must Draw The Graffiti On a Vertical Wall !
+OVERFLOWING_GRAFFITI = Overflow Drawing !
