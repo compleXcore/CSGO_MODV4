@@ -805,6 +805,18 @@ enum _:Knifes
 	PARACORD
 };
 
+enum _:Messages
+{
+	Message_WeaponList,
+	Message_ScreenFade,
+	Message_CurWeapon,
+	Message_ForceCam,
+	Message_SetFov,
+	Message_HideWeapon
+};
+
+new Message_New[Messages];
+
 new Crosshair[MAX_PLAYERS + 1],
 	iPlayerGlove[MAX_PLAYERS + 1], 
 	iPlayerSkin[MAX_PLAYERS + 1][Weapons],
@@ -830,8 +842,7 @@ new Crosshair[MAX_PLAYERS + 1],
 	g_warmtime,
 	iSeconds,
 	bool:g_warmup,
-	bool:g_RadioTimer[MAX_PLAYERS + 1],
-	bool:g_isDead[MAX_PLAYERS + 1];
+	bool:g_RadioTimer[MAX_PLAYERS + 1];
 
 new const augsg_nokta[] = { "custom_augsg_scope" };
 new const AUG_SCOPE[] = "models/csgonew4/v_augscope.mdl";
@@ -852,31 +863,14 @@ new const ROUND_SOUNDS[][] = {
 	"csgonew4/lostround.mp3" // 3
 };
 
-enum _:Messages
-{
-	Message_WeaponList,
-	Message_ScreenFade,
-	Message_CurWeapon,
-	Message_ForceCam,
-	Message_SetFov,
-	Message_HideWeapon
-};
-
-new Message_New[Messages];
-
-new Messages_Names[Messages][] =
-{
-	"WeaponList",
-	"ScreenFade",
-	"CurWeapon",
-	"ForceCam",
-	"SetFOV",
-	"HideWeapon"
-};
-
 new const GameName[32] = "CS:Global Offensive";
 
-#define is_user_valid(%1) (1 <= %1 <= get_member_game(m_nMaxPlayers))
+new HookChain:g_iHookChainImpulseCommandsPost;
+new bool:g_bPlayerAlive[MAX_PLAYERS+1], bool:g_bPlayerConnected[MAX_PLAYERS+1];
+
+new Array:g_ArrayConnectedPlayers, Array:g_ArrayAlivePlayers, Array:g_ArrayDeadPlayers, Array:g_ArrayCTPlayers, Array:g_ArrayTPlayers;
+new g_iTotalAlive, g_iTotalPlayer, g_iTotalDead, g_iTotalCT, g_iTotalT, g_iMaxClientID;
+
 #define is_nullent2(%0)          (%0 == 0 || %0 == NULLENT || is_entity(%0) == false)
 #define HUD_HIDE_FLASH (1<<1)
 #define HUD_HIDE_CROSS (1<<6)
@@ -903,10 +897,12 @@ public plugin_init()
 		RegisterHam(Ham_TraceAttack, TraceBullets[i], "HamF_TraceAttack_Post", true);
 	}
 
-	for(new i; i < sizeof(Message_New); i++)
-	{
-		Message_New[i] = get_user_msgid(Messages_Names[i]);
-	}
+	Message_New[Message_WeaponList] = get_user_msgid("WeaponList");
+	Message_New[Message_ScreenFade] = get_user_msgid("ScreenFade");
+	Message_New[Message_CurWeapon] = get_user_msgid("CurWeapon");
+	Message_New[Message_ForceCam] = get_user_msgid("ForceCam");
+	Message_New[Message_SetFov] = get_user_msgid("SetFOV");
+	Message_New[Message_HideWeapon] = get_user_msgid("HideWeapon");
 
 	register_message(get_user_msgid("TextMsg"), "Message_TextMsg" );
 	
@@ -917,7 +913,8 @@ public plugin_init()
 	RegisterHookChain(RG_CSGameRules_RestartRound, "CSGameRules_RestartRound", .post = false);
 	RegisterHookChain(RG_CSGameRules_OnRoundFreezeEnd, "CSGameRules_OnRoundFreezeEnd", .post = true);
 	RegisterHookChain(RG_CGrenade_DefuseBombStart, "CGrenade_DefuseBombStart", .post = true);
-	RegisterHookChain(RG_CBasePlayer_ImpulseCommands, "LookWeapon", .post = false);
+	RegisterHookChain(RG_CBasePlayer_ImpulseCommands, "LookWeapon_Pre", .post = false);
+	DisableHookChain(g_iHookChainImpulseCommandsPost = RegisterHookChain(RG_CBasePlayer_ImpulseCommands, "LookWeapon_Post", true));
 	RegisterHookChain(RG_CBasePlayer_Spawn, "CBasePlayer_SpawnPost", .post = true);
 	RegisterHookChain(RG_CSGameRules_DeathNotice, "CSGameRules_DeathNotice", .post = true); 
 	RegisterHookChain(RG_CBasePlayer_AddPlayerItem, "CBasePlayer_AddPlayerItem", .post = false);
@@ -959,6 +956,58 @@ public plugin_init()
 
 public CBasePlayer_SpawnPost(const id)
 {
+	if(!is_user_alive(id))
+		return;
+
+	g_bPlayerAlive[id] = true;
+
+	GameLog("CBasePlayer_SpawnPost (client %i)", id);
+
+	if(ArrayFindValue(g_ArrayAlivePlayers, id) == -1)
+	{
+		ArrayPushCell(g_ArrayAlivePlayers, id);
+		g_iTotalAlive++;
+	}
+
+	new iArrayID;
+	if((iArrayID = ArrayFindValue(g_ArrayDeadPlayers, id)) != -1)
+	{
+		ArrayDeleteItem(g_ArrayDeadPlayers, iArrayID);
+		g_iTotalDead--;
+	}
+
+	switch(get_member(id, m_iTeam))
+	{
+		case TEAM_TERRORIST:
+		{
+			if((iArrayID = ArrayFindValue(g_ArrayCTPlayers, id)) != -1)
+			{
+				ArrayDeleteItem(g_ArrayCTPlayers, iArrayID);
+				g_iTotalT--;
+			}
+
+			if(ArrayFindValue(g_ArrayTPlayers, id) == -1)
+			{
+				ArrayPushCell(g_ArrayTPlayers, id);
+				g_iTotalT++;
+			}
+		}
+		case TEAM_CT:
+		{
+			if((iArrayID = ArrayFindValue(g_ArrayTPlayers, id)) != -1)
+			{
+				ArrayDeleteItem(g_ArrayTPlayers, iArrayID);
+				g_iTotalCT--;
+			}
+
+			if(ArrayFindValue(g_ArrayCTPlayers, id) == -1)
+			{
+				ArrayPushCell(g_ArrayCTPlayers, id);
+				g_iTotalCT++;
+			}
+		}
+	}
+
 	if(is_user_bot(id))
 	{
 		iPlayerKnifeA[id] = random_num(0, 9);
@@ -966,106 +1015,113 @@ public CBasePlayer_SpawnPost(const id)
 		ViewBodySwitch(id, GetBodyIndex(id, iPlayerGlove[id], 0));
 	}
 
-	if(is_user_alive(id) && is_user_valid(id))
+	static iWeapon;
+
+	iWeapon = get_member(id, m_pActiveItem);
+
+	if(!is_nullent2(iWeapon))
 	{
-		g_isDead[id] = false;
-	}
+		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
+	}		
 
-	if(!g_isDead[id])
+	static tur; tur = (get_member_game(m_iNumCTWins)+get_member_game(m_iNumTerroristWins)+1);
+	if(tur == 16)
 	{
-		static iWeapon;
-	
-		iWeapon = get_member(id, m_pActiveItem);
+		static para; para = get_cvar_num("mp_startmoney");
 
-		if(!is_nullent2(iWeapon) && !g_isDead[id])
-		{
-			ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
-		}		
+		rg_remove_all_items(id);
+		rg_set_user_armor(id, 0, ARMOR_NONE);
+		rg_give_item(id, "weapon_knife", GT_REPLACE);
 
-		static tur; tur = (get_member_game(m_iNumCTWins)+get_member_game(m_iNumTerroristWins)+1);
-		if(tur == 16)
-		{
-			static para; para = get_cvar_num("mp_startmoney");
-
-			rg_remove_all_items(id);
-			rg_set_user_armor(id, 0, ARMOR_NONE);
-			rg_give_item(id, "weapon_knife", GT_REPLACE);
-
-			switch(get_member(id, m_iTeam))
-			{
-				case TEAM_TERRORIST:
-				{
-					rg_give_item(id, "weapon_glock18", GT_REPLACE);
-					rg_set_user_bpammo(id, rg_get_weapon_info("weapon_glock18", WI_ID), 90);
-				}
-				case TEAM_CT:
-				{
-					rg_give_item(id, "weapon_usp", GT_REPLACE);
-					rg_set_user_bpammo(id, rg_get_weapon_info("weapon_usp", WI_ID), 90);
-				}
-			}
-			rg_add_account(id, para, AS_SET);
-		}
-
-		if(g_warmup)
-		{
-			new Map[32]; get_mapname(Map, sizeof(Map));
-			if(equal(Map, "awp_", 3)) 
-				return;
-
-			silah_ver(id);
-		}
-
-		g_PlayerAgent[id][0] = g_PlayerAgentC[id][0];
-		g_PlayerAgent[id][1] = g_PlayerAgentC[id][1];
-		g_PlayerAgent[id][2] = g_PlayerAgentC[id][2];
-		
 		switch(get_member(id, m_iTeam))
 		{
 			case TEAM_TERRORIST:
 			{
-				switch(g_PlayerAgent[id][0])
-				{
-					case 2: {
-						rg_set_user_model(id, AGENT_MODELT[g_PlayerAgent[id][0]], true);
-						set_entvar(id, var_skin, g_PlayerAgent[id][2]);
-					}
-					default: rg_set_user_model(id, AGENT_MODELT[g_PlayerAgent[id][0]], true);
-				}
+				rg_give_item(id, "weapon_glock18", GT_REPLACE);
+				rg_set_user_bpammo(id, rg_get_weapon_info("weapon_glock18", WI_ID), 90);
 			}
 			case TEAM_CT:
 			{
-				rg_set_user_model(id, AGENT_MODELCT[g_PlayerAgent[id][1]], true);
+				rg_give_item(id, "weapon_usp", GT_REPLACE);
+				rg_set_user_bpammo(id, rg_get_weapon_info("weapon_usp", WI_ID), 90);
 			}
 		}
-
-		UnScope(id);
-		Event_CurWeapon(id);
-		ShowHud(id);
+		rg_add_account(id, para, AS_SET);
 	}
+
+	if(g_warmup)
+	{
+		new Map[32]; get_mapname(Map, sizeof(Map));
+		if(equal(Map, "awp_", 3)) 
+			return;
+
+		silah_ver(id);
+	}
+
+	g_PlayerAgent[id][0] = g_PlayerAgentC[id][0];
+	g_PlayerAgent[id][1] = g_PlayerAgentC[id][1];
+	g_PlayerAgent[id][2] = g_PlayerAgentC[id][2];
+	
+	switch(get_member(id, m_iTeam))
+	{
+		case TEAM_TERRORIST:
+		{
+			switch(g_PlayerAgent[id][0])
+			{
+				case 2: {
+					rg_set_user_model(id, AGENT_MODELT[g_PlayerAgent[id][0]], true);
+					set_entvar(id, var_skin, g_PlayerAgent[id][2]);
+				}
+				default: rg_set_user_model(id, AGENT_MODELT[g_PlayerAgent[id][0]], true);
+			}
+		}
+		case TEAM_CT:
+		{
+			rg_set_user_model(id, AGENT_MODELCT[g_PlayerAgent[id][1]], true);
+		}
+	}
+
+	UnScope(id);
+	Event_CurWeapon(id);
+	ShowHud(id);
 }
 
-public CSGameRules_DeathNotice(victim, attacker)
+public CSGameRules_DeathNotice(clientIndex, AttackerIndex)
 {
-	if(!is_user_connected(victim) || !is_user_valid(victim))
+	if(!IsPlayer_Connected(clientIndex))
 		return HC_CONTINUE;
 
-	g_isDead[victim] = true;
+	GameLog("Player_Death (client %i)", clientIndex);
+
+	new iArrayID;
+	if((iArrayID = ArrayFindValue(g_ArrayAlivePlayers, clientIndex)) != -1)
+	{
+		ArrayDeleteItem(g_ArrayAlivePlayers, iArrayID);
+		g_iTotalAlive--;
+	}
+
+	if(ArrayFindValue(g_ArrayDeadPlayers, clientIndex) == -1)
+	{
+		ArrayPushCell(g_ArrayDeadPlayers, clientIndex);
+		g_iTotalDead++;
+	}
+
+	g_bPlayerAlive[clientIndex] = false;
 
 	if(g_warmup)
 	{	
 		new team;
-		team = get_member(victim, m_iTeam);
+		team = get_member(clientIndex, m_iTeam);
 
 		if(any:team == TEAM_TERRORIST || any:team == TEAM_CT)
 		{
-			set_task( 0.5, "revle", victim );
+			set_task( 0.5, "revle", clientIndex);
 		}
 	}
 
-	if(get_member(victim, m_bHeadshotKilled) && WeaponIdType:get_member(get_member(attacker, m_pActiveItem), m_iId) != WEAPON_KNIFE)
+	if(get_member(clientIndex, m_bHeadshotKilled) && WeaponIdType:get_member(get_member(AttackerIndex, m_pActiveItem), m_iId) != WEAPON_KNIFE)
 	{
-		rh_emit_sound2(victim, 0, CHAN_STATIC, SOUNDS2[2], 1.0, 0.9, 0, PITCH_NORM);
+		rh_emit_sound2(clientIndex, 0, CHAN_STATIC, SOUNDS2[2], 1.0, 0.9, 0, PITCH_NORM);
 	}
 
 	return HC_CONTINUE;
@@ -1083,7 +1139,7 @@ public CC4_PrimaryAttack( iC4 )
 
 public silah_ver( id )
 {
-	if( !g_isDead[id] && g_warmup) 
+	if( IsPlayer_Alive(id) && g_warmup) 
 	{
 		static Item[ 64 ];
 		
@@ -1115,7 +1171,7 @@ public silah_verdevam( id, menu, item )
 		return PLUGIN_HANDLED;
 	}
 	
-	if(!is_user_connected(id) || g_isDead[id] || !g_warmup)
+	if(!IsPlayer_Connected(id) || !IsPlayer_Alive(id) || !g_warmup)
 		return PLUGIN_HANDLED;
 
 	new access, callback, data[ 6 ], name[ 32 ];
@@ -1130,48 +1186,33 @@ public silah_verdevam( id, menu, item )
 	{
 		case 1 :
 		{
-			if( is_user_connected(id) && !g_isDead[id] && g_warmup )
-			{
-				rg_give_item(id, "weapon_awp");
-				rg_set_user_bpammo(id, WEAPON_AWP, 250);
-				rg_give_item(id, "item_assaultsuit");
-			}
+			rg_give_item(id, "weapon_awp");
+			rg_set_user_bpammo(id, WEAPON_AWP, 250);
+			rg_give_item(id, "item_assaultsuit");
 		}
 		case 2 :
 		{
-			if( is_user_connected(id) && !g_isDead[id] && g_warmup )
-			{
-				rg_give_item(id, "weapon_ak47" );
-				rg_set_user_bpammo(id, WEAPON_AK47, 250);
-				rg_give_item(id, "item_assaultsuit");
-			}
+			rg_give_item(id, "weapon_ak47" );
+			rg_set_user_bpammo(id, WEAPON_AK47, 250);
+			rg_give_item(id, "item_assaultsuit");
 		}
 		case 3 :
 		{
-			if( is_user_connected(id) && !g_isDead[id] && g_warmup )
-			{
-				rg_give_item(id, "weapon_m4a1" );
-				rg_set_user_bpammo(id, WEAPON_M4A1, 250);
-				rg_give_item(id, "item_assaultsuit");
-			}
+			rg_give_item(id, "weapon_m4a1" );
+			rg_set_user_bpammo(id, WEAPON_M4A1, 250);
+			rg_give_item(id, "item_assaultsuit");
 		}
 		case 4 :
 		{
-			if( is_user_connected(id) && !g_isDead[id] && g_warmup )
-			{
-				rg_give_item(id, "weapon_famas" );
-				rg_set_user_bpammo(id, WEAPON_FAMAS, 250);
-				rg_give_item(id, "item_assaultsuit");
-			}
+			rg_give_item(id, "weapon_famas" );
+			rg_set_user_bpammo(id, WEAPON_FAMAS, 250);
+			rg_give_item(id, "item_assaultsuit");
 		}
 		case 5 :
 		{
-			if( is_user_connected(id) && !g_isDead[id] && g_warmup )
-			{
-				rg_give_item(id, "weapon_galil" );
-				rg_set_user_bpammo(id, WEAPON_GALIL, 250);
-				rg_give_item(id, "item_assaultsuit");
-			}
+			rg_give_item(id, "weapon_galil" );
+			rg_set_user_bpammo(id, WEAPON_GALIL, 250);
+			rg_give_item(id, "item_assaultsuit");
 		}
 	}
 	menu_destroy( menu );
@@ -1196,9 +1237,26 @@ public CSGameRules_RestartRound()
 
 		static tur; tur = (get_member_game(m_iNumCTWins)+get_member_game(m_iNumTerroristWins)+1);
 
-		for(new id = 1; id <= maxplayer; id++)
+		for(new iArrayID = TotalPlayers_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 		{
-			if(!is_user_connected(id) || !is_user_valid(id))
+			clientIndex = Get_Array_ConnectedPlayers(iArrayID);
+
+			if(tur == 15 || tur == 30)
+			{
+				new Text[128];
+				if(tur == 15) formatex(Text, charsmax(Text), "Ilk Yarinin Son Turu!");
+				else if(tur == 30) formatex(Text, charsmax(Text), "Mac Sayisi!");
+				set_dhudmessage(255, 255, 255, -1.0, 0.20, 2, 9.0, 12.0);
+				show_dhudmessage(clientIndex, Text);
+
+				PlaySound(clientIndex, ROUND_SOUNDS[3]);
+			}
+			else PlaySound(clientIndex, ROUND_SOUNDS[random_num(0, 1)]);
+		}
+
+		/*for(new id = 1; id <= maxplayer; id++)
+		{
+			if(!IsPlayer_Connected(id) || !is_user_valid(id))
 				continue;
 			
 			if(tur == 15 || tur == 30)
@@ -1212,15 +1270,39 @@ public CSGameRules_RestartRound()
 				PlaySound(id, ROUND_SOUNDS[3]);
 			}
 			else PlaySound(id, ROUND_SOUNDS[random_num(0, 1)]);
-		}
+		}*/
 
-		static para; para = get_cvar_num("mp_startmoney");
-		
 		if(tur == 16)
 		{
-			for(new id = 1; id <= maxplayer; id++)
+			static para; para = get_cvar_num("mp_startmoney");
+
+			for(new iArrayID = TotalPlayers_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 			{
-				if(!is_user_connected(id) || !is_user_valid(id) || g_isDead[id])
+				clientIndex = Get_Array_ConnectedPlayers(iArrayID);
+
+				rg_remove_all_items(clientIndex);
+				rg_set_user_armor(clientIndex, 0, ARMOR_NONE);
+				rg_give_item(clientIndex, "weapon_knife", GT_REPLACE);
+
+				switch(get_member(clientIndex, m_iTeam))
+				{
+					case TEAM_TERRORIST:
+					{
+						rg_give_item(clientIndex, "weapon_glock18", GT_REPLACE);
+						rg_set_user_bpammo(clientIndex, rg_get_weapon_info("weapon_glock18", WI_ID), 90);
+					}
+					case TEAM_CT:
+					{
+						rg_give_item(clientIndex, "weapon_usp", GT_REPLACE);
+						rg_set_user_bpammo(clientIndex, rg_get_weapon_info("weapon_usp", WI_ID), 90);
+					}
+				}
+				set_member(clientIndex, m_iAccount, para);
+			}
+
+			/*for(new id = 1; id <= maxplayer; id++)
+			{
+				if(!IsPlayer_Connected(id) || !is_user_valid(id))
 					continue;
 
 				rg_remove_all_items(id);
@@ -1241,7 +1323,7 @@ public CSGameRules_RestartRound()
 					}
 				}
 				set_member(id, m_iAccount, para);
-			}
+			}*/
 		}
 
 		if(tur != 31)
@@ -1254,26 +1336,49 @@ public CSGameRules_RestartRound()
 	}
 }
 
+/*
+stock GetPlayingCount(const Team)
+{
+	new iPlaying, id, team;
+	
+	for (id = 1; id <= maxplayer; id++)
+	{
+		if (!is_user_valid(id) || !IsPlayer_Connected(id) || !IsPlayer_Alive(id))
+			continue;
+		
+		team = get_member(id, m_iTeam);
+		
+		if (any:team != TEAM_SPECTATOR && any:team != TEAM_UNASSIGNED)
+		{
+			if(Team == 0 && any:team == TEAM_TERRORIST) iPlaying++;
+			else if(Team == 1 && any:team == TEAM_CT) iPlaying++;
+			else if(Team == 2) iPlaying++;
+		}
+	}
+	
+	return iPlaying;
+}*/
+
 public CSGameRules_OnRoundFreezeEnd()
 {
 	new team, canli, player, id, number, count;
-	canli = Canli_kisiler();
-	count = GetPlayingCount(2);
+	canli = TotalAlive_Count(); //Canli_kisiler();
+	count = TotalCT_Count() + TotalT_Count(); //GetPlayingCount(2);
 
-	if(count > 1) {
-		count = GetPlayingCount(1);
+	if(count >= 2) {
+		count = TotalCT_Count();//GetPlayingCount(1);
 		if(count >= 1) {
 			while(number < 1)
 			{
 				player = GetRandomAlive(random_num(1, canli));
 				team = get_member(player, m_iTeam);
 
-				if(!is_user_connected(player) || !is_user_valid(player) || any:team != TEAM_CT || g_isDead[player])
+				if(!is_user_connected(player) || !is_user_valid(player) || any:team != TEAM_CT)
 					continue;
 				
 				for(id = 1; id <= maxplayer; id++)
 				{
-					if(!is_user_connected(id) || !is_user_valid(id))
+					if(!IsPlayer_Connected(id) || !is_user_valid(id))
 						continue;
 					
 					team = get_member(id, m_iTeam);
@@ -1291,7 +1396,7 @@ public CSGameRules_OnRoundFreezeEnd()
 			}
 		}
 
-		count = GetPlayingCount(1);
+		count = TotalT_Count();//GetPlayingCount(1);
 		number = 0;
 
 		if(count >= 1) {
@@ -1300,12 +1405,12 @@ public CSGameRules_OnRoundFreezeEnd()
 				player = GetRandomAlive(random_num(1, canli));
 				team = get_member(player, m_iTeam);
 
-				if(!is_user_connected(player) || !is_user_valid(player) || any:team != TEAM_TERRORIST || g_isDead[player])
+				if(!is_user_connected(player) || !is_user_valid(player) || any:team != TEAM_TERRORIST)
 					continue;
 
 				for(id = 1; id <= maxplayer; id++)
 				{
-					if(!is_user_connected(id) || !is_user_valid(id))
+					if(!IsPlayer_Connected(id) || !is_user_valid(id))
 						continue;
 					
 					team = get_member(id, m_iTeam);
@@ -1337,24 +1442,42 @@ public plugin_end()
 {
 	//Close the vault when the plugin ends (map change\server shutdown\restart)
 	nvault_close(g_vault);
+
+	Destroy_Arrays();
+	GameLog("Plugin End/Destroy Arrays");
 }
 
 public client_connect(id)
 {
 	LoadLevel(id);
 
-	if(g_fov[id] == 0 && is_user_valid(id) && is_user_connected(id))
+	if(g_fov[id] == 0 && is_user_valid(id) && IsPlayer_Connected(id))
 	{
 		g_fov[id] = 90;
-		set_member(id, m_iFOV, 90);
-		set_member(id, m_iClientFOV, 90);
 	}
 }
 
 public client_putinserver(id)
 {
+	if(id > g_iMaxClientID) g_iMaxClientID = id;
+
+	GameLog("client_putinserver/(client %i)", id);
+
+	g_bPlayerConnected[id] = true;
+
+	if(ArrayFindValue(g_ArrayConnectedPlayers, id) == -1)
+	{
+		ArrayPushCell(g_ArrayConnectedPlayers, id);
+		g_iTotalPlayer++;
+	}
+
+	if(ArrayFindValue(g_ArrayDeadPlayers, id) == -1)
+	{
+		ArrayPushCell(g_ArrayDeadPlayers, id);
+		g_iTotalDead++;
+	}
+
 	g_RadioTimer[id] = false;
-	g_isDead[id] = false;
 
 	if( g_warmup )
 	{
@@ -1393,12 +1516,47 @@ public client_disconnected(id)
 	Values[id][1] = 0.0;
 	Values[id][2] = 0.0;
 	g_RadioTimer[id] = false;
-	g_isDead[id] = false;
+
+	new iArrayID;
+
+	GameLog("client_disconnected/Client: %i - Total: Dead = %i/Player = %i/Alive = %i", id, g_iTotalDead, g_iTotalPlayer, g_iTotalAlive);
+
+	if((iArrayID = ArrayFindValue(g_ArrayConnectedPlayers, id)) != -1)
+	{
+		ArrayDeleteItem(g_ArrayConnectedPlayers, iArrayID);
+		g_iTotalPlayer--;
+	}
+
+	if((iArrayID = ArrayFindValue(g_ArrayAlivePlayers, id)) != -1)
+	{
+		ArrayDeleteItem(g_ArrayAlivePlayers, iArrayID);
+		g_iTotalAlive--;
+	}
+
+	if((iArrayID = ArrayFindValue(g_ArrayDeadPlayers, id)) != -1)
+	{
+		ArrayDeleteItem(g_ArrayDeadPlayers, iArrayID);
+		g_iTotalDead--;
+	}
+
+	g_bPlayerAlive[id] = false;
+	g_bPlayerConnected[id] = false;
+
+	RequestFrame("Check_MaxClientID");
+}
+
+public Check_MaxClientID()
+{
+	g_iMaxClientID = 0;
+	for(new clientIndex = 1; clientIndex <= MaxClients; clientIndex++)
+	{
+		if(IsPlayer_Connected(clientIndex)) g_iMaxClientID = clientIndex;
+	}
 }
 
 public revle( const id )
 {
-	if( g_warmup && is_user_connected(id) && g_isDead[id])
+	if( g_warmup && IsPlayer_Connected(id))
 	{	
 		new team;
 		team = get_member(id, m_iTeam);
@@ -1542,11 +1700,10 @@ public DeployWeaponSwitch(iTaskData[], id)
 	static WeaponIdType:wep_id, OldWeapon, pEntity; // skinid
 	OldWeapon = iTaskData[0];
 
-	if(g_isDead[id] || !is_user_connected(id)) return HC_CONTINUE;
+	if(!IsPlayer_Alive(id) || !IsPlayer_Connected(id)) return HC_CONTINUE;
 
 	pEntity = get_member(id, m_pActiveItem);
-	//skinid = WeaponSkinID(id, pEntity);
-	wep_id = rg_get_weapon(pEntity); //WEAPON_ENT(pEntity);
+	wep_id = rg_get_weapon(pEntity);
 
 	if(wep_id != WeaponIdType:rg_get_weapon(OldWeapon)) {
 		//set_entvar(id, var_viewmodel, "");
@@ -1609,27 +1766,28 @@ public HamF_CS_Weapon_SendWeaponAnim_Post(iEnt, iAnim, Skiplocal)
 
 public Forward_PlaybackEvent(iFlags, id, iEvent, Float:fDelay, Float:vecOrigin[3], Float:vecAngle[3], Float:flParam1, Float:flParam2, iParam1, iParam2, bParam1, bParam2)
 {
-	if(!is_user_valid(id))
+	if(!is_user_valid(id) || !IsPlayer_Connected(id))
 	{
 		return FMRES_IGNORED;
 	}
 
-	if(!g_isDead[id])
+	if(IsPlayer_Alive(id))
 	{
 		static iEnt;
 	
 		iEnt = get_member(id, m_pActiveItem);
-
+		
 		if(is_nullent2(iEnt))
 		{
 			return FMRES_SUPERCEDE;
 		}
 
-		new ResourcePath[32+(2*32)], Distant;
+		static ResourcePath[32+(2*32)], Distant, WeaponIdType:weapon;
 
+		weapon = rg_get_weapon(iEnt);
 		g_LookTime[id] = 0.0;
 
-		switch(WeaponIdType:rg_get_weapon(iEnt))
+		switch(weapon)
 		{
 			case WEAPON_M4A1:
 			{
@@ -1705,7 +1863,7 @@ public Forward_PlaybackEvent(iFlags, id, iEvent, Float:fDelay, Float:vecOrigin[3
 			PlaySound(0, ResourcePath);
 		}
 
-		switch(WeaponIdType:rg_get_weapon(iEnt))
+		switch(weapon)
 		{
 			case WEAPON_M4A1:
 			{
@@ -1733,13 +1891,23 @@ public Forward_PlaybackEvent(iFlags, id, iEvent, Float:fDelay, Float:vecOrigin[3
 		return FMRES_SUPERCEDE;
 	}
 
-	for(new i = 1; i <= maxplayer; i++)
+	for(new iArrayID = TotalAlive_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
+	{
+		clientIndex = Get_ArrayValue_AlivePlayers(iArrayID);
+
+		if(get_entvar(clientIndex, var_iuser1) != OBS_IN_EYE || get_entvar(clientIndex, var_iuser2) != id) 
+			continue;
+
+		return FMRES_SUPERCEDE;
+	}
+
+	/*for(new i = 1; i <= maxplayer; i++)
 	{
 		if(get_entvar(i, var_iuser1) != OBS_IN_EYE || get_entvar(i, var_iuser2) != id) 
 			continue;
 		
 		return FMRES_SUPERCEDE;
-	}
+	}*/
 
 	return FMRES_IGNORED;	//Let other things to be pass	
 }
@@ -1842,7 +2010,7 @@ public FM_Hook_UpdateClientData_Post(iPlayer, SendWeapons, CD_Handle)
 				}
 				default:
 				{
-					if(WeaponIdType:get_member(iActiveItem, m_iId) == WEAPON_USP)
+					if(wep_id == WEAPON_USP)
 					{
 						set_member(iActiveItem, m_Weapon_iWeaponState, get_member(iActiveItem, m_Weapon_iWeaponState) | WPNSTATE_USP_SILENCED);
 						set_member(iActiveItem, m_Weapon_flNextSecondaryAttack, 9999.9);
@@ -1853,7 +2021,6 @@ public FM_Hook_UpdateClientData_Post(iPlayer, SendWeapons, CD_Handle)
 				}
 			}
 
-			//PlayWeaponState(iTarget, GetWeaponDrawAnim(iActiveItem));	//Custom weapon draw anim should go there too
 			UTIL_SendWeaponAnim(iTarget, GetWeaponDrawAnim(iActiveItem), iBodyIndex[iTarget]);
 			
 			set_member(iActiveItem, m_flLastEventCheck, 0.0);
@@ -1880,18 +2047,12 @@ public HamF_TraceAttack_Post(iEnt, iAttacker, Float:damage, Float:fDir[3], ptr, 
 {
 	if(g_duman[iAttacker] != 0) return HAM_IGNORED;
 
-	/*static iWeapon;
-	
-	iWeapon = get_member(iAttacker, m_pActiveItem);*/
-
-	if(WeaponIdType:rg_get_user_weapon(iAttacker) == WEAPON_KNIFE) //if(WeaponIdType:get_member(get_member(iAttacker, m_pActiveItem), m_iId) == WEAPON_KNIFE)
+	static WeaponIdType:weapon;
+	weapon = rg_get_user_weapon(iAttacker);
+	if(weapon == WEAPON_KNIFE)
 	{
 		return HAM_IGNORED;
 	}
-	/*switch(WEAPON_ENT(iWeapon))
-	{
-		case WEAPON_KNIFE: return HAM_IGNORED;	//No decals while stabbing or swinging with knife
-	}*/
 
 	static Float:flEnd[3], Float:vecPlane[3];
 	get_tr2(ptr, TR_vecEndPos, flEnd);
@@ -2019,8 +2180,6 @@ public MenuHandle_ajanmenu(const id, const menu, const item)
 
 public T_AJANLARI(id)
 {
-	if(g_isDead[id]) return PLUGIN_HANDLED;
-	
 	static menu[512];
 	new len;
 
@@ -2057,7 +2216,7 @@ public T_AJANLARI(id)
 } 
 
 public t_ajancmd(id, key) {
-	if(!is_user_connected(id))
+	if(!IsPlayer_Connected(id))
 		return PLUGIN_HANDLED;
 
 	switch(key)
@@ -2170,7 +2329,7 @@ public MenuHandle_SKIN_Menu(const id, const menu, const item)
 		menu_destroy(menu);
 		return PLUGIN_HANDLED;
 	}
-	
+
 	new data[6], name[32], access, callback;
 	menu_item_getinfo(menu, item, access, data, charsmax(data), name, charsmax(name), callback);
 	new Numara = str_to_num(data);
@@ -2192,7 +2351,7 @@ public MenuHandle_SKIN_Menu(const id, const menu, const item)
 	
 			iWeapon = get_member(id, m_pActiveItem);
 			
-			if(!is_nullent2(iWeapon) && !g_isDead[id])
+			if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 			{
 				ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 				
@@ -2267,7 +2426,7 @@ public MenuHandle_USP_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2336,7 +2495,7 @@ public MenuHandle_P90_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2407,7 +2566,7 @@ public MenuHandle_M4A4_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2478,7 +2637,7 @@ public MenuHandle_M4A1_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2547,7 +2706,7 @@ public MenuHandle_GLOCK_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2616,7 +2775,7 @@ public MenuHandle_GALIL_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2686,7 +2845,7 @@ public MenuHandle_DEAGLE_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2756,7 +2915,7 @@ public MenuHandle_AWP_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2827,7 +2986,7 @@ public MenuHandle_AK47_Menu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2949,7 +3108,7 @@ public MenuHandle_PARACORDMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -2998,7 +3157,7 @@ public MenuHandle_STILETTOMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3047,7 +3206,7 @@ public MenuHandle_TALONMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3096,7 +3255,7 @@ public MenuHandle_M9BAYONETMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3145,7 +3304,7 @@ public MenuHandle_KARAMBITMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3194,7 +3353,7 @@ public MenuHandle_FLIPMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3243,7 +3402,7 @@ public MenuHandle_ButterflyMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3292,7 +3451,7 @@ public MenuHandle_BOWIEMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3341,7 +3500,7 @@ public MenuHandle_BAYONETMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3390,7 +3549,7 @@ public MenuHandle_CLASSICMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3474,7 +3633,7 @@ public MenuHandle_EldivenMenu(const id, const menu, const item)
 	
 	iWeapon = get_member(id, m_pActiveItem);
 	
-	if(!is_nullent2(iWeapon) && !g_isDead[id])
+	if(!is_nullent2(iWeapon) && IsPlayer_Alive(id))
 	{
 		ExecuteHamB(Ham_Item_Deploy, iWeapon);	//Will give and error while dead
 	}
@@ -3533,7 +3692,7 @@ public MenuHandle_Gorus_Menu(const id, const menu, const item)
 		}
 	}
 
-	if(!g_isDead[id])
+	if(IsPlayer_Alive(id))
 	{
 		Event_CurWeapon(id);
 		Msg_SetFOV(id, g_fov[id]);
@@ -3580,7 +3739,7 @@ public Crosshair_Menu_Handler(const id, const Menu, const Item)
 	
 	client_print_color(id, print_team_red, "^1[^4%s^1] ^4%s ^1| ^3Crosshair Aktif Edildi.", TAG, Sprites[Key][0]);
 
-	//client_cmd(id, "lastinv;wait;wait;wait;wait;wait;wait;wait;wait;lastinv");
+	client_cmd(id, "lastinv;wait;wait;wait;wait;wait;wait;wait;wait;lastinv");
 
 	client_cmd(id, "crosshair ^"1^"");
 	
@@ -3590,7 +3749,7 @@ public Crosshair_Menu_Handler(const id, const Menu, const Item)
 
 public Event_CurWeapon(id)
 {
-	if(g_isDead[id] || !is_user_valid(id) || !is_user_connected(id)) return PLUGIN_CONTINUE;
+	if(!is_user_valid(id) || !IsPlayer_Alive(id) || !IsPlayer_Connected(id)) return PLUGIN_CONTINUE;
 
 	static Weapon_ID, Primary, iEntity, WeaponIdType:get_weapon, Sprite_TxT[52];
 	Weapon_ID = get_user_weapon(id, Primary);
@@ -3659,9 +3818,9 @@ public Event_CurWeapon(id)
 	return PLUGIN_CONTINUE;
 }
 
-public LookWeapon(id)
+public LookWeapon_Pre(id)
 {
-	if(!is_user_valid(id) || g_isDead[id] || !is_user_connected(id)) return HC_CONTINUE;
+	if(!is_user_valid(id) || !IsPlayer_Alive(id) || !IsPlayer_Connected(id)) return HC_CONTINUE;
 
 	static iEntity, fInReload, WeaponIdType:get_weapon;
 	
@@ -3672,7 +3831,7 @@ public LookWeapon(id)
 	if(is_nullent2(iEntity) || fInReload) return HC_CONTINUE;
 
 	if(get_member(id, m_bResumeZoom)) Msg_SetFOV(id, g_fov[id]);
-				
+
 	if(get_entvar(id, var_impulse) == 100)
 	{
 		if(get_gametime() > g_LookTime[id])
@@ -3702,10 +3861,6 @@ public LookWeapon(id)
 					g_ZoomTime[id] = get_gametime() + 0.1;
 				}
 			}
-			/*case WEAPON_AWP, WEAPON_SCOUT:
-			{
-				if(get_member(id, m_iFOV) > 40) Msg_SetFOV(id, g_fov[id]);
-			}*/
 			case WEAPON_M4A1, WEAPON_USP: set_member(iEntity, m_Weapon_flNextSecondaryAttack, 9999.9);
 			default: return HC_CONTINUE;
 		}
@@ -3731,9 +3886,14 @@ public LookWeapon(id)
 	return HC_CONTINUE;
 }
 
+public LookWeapon_Post()
+{
+	DisableHookChain(g_iHookChainImpulseCommandsPost);
+}
+
 public Scope(id)
 {
-	if(g_isDead[id] || !is_user_connected(id))
+	if(!IsPlayer_Alive(id) || !IsPlayer_Connected(id))
 	{
 		g_Zoom[id] = 0;
 		return;
@@ -3758,7 +3918,7 @@ public Scope(id)
 
 public UnScope(id)
 {
-	if(g_isDead[id] || !is_user_connected(id) || g_Zoom[id] == 0)
+	if(!IsPlayer_Alive(id) || !IsPlayer_Connected(id) || g_Zoom[id] == 0)
 	{
 		g_Zoom[id] = 0;
 		return;
@@ -3809,7 +3969,7 @@ public UnScope(id)
 }
 
 public CBasePlayer_AddPlayerItem(const pPlayer, const pItem) {
-	if(is_entity(pItem) && !g_isDead[pPlayer] && is_user_connected(pPlayer))
+	if(is_entity(pItem) && IsPlayer_Alive(pPlayer) && IsPlayer_Connected(pPlayer))
 	{
 		static WeaponIdType:CSWID; CSWID = rg_get_weapon(pItem); //WEAPON_ENT(pItem);
 		switch(CSWID)
@@ -3923,7 +4083,7 @@ public msg_audio()
 
 public radio(id)
 {
-	if(g_isDead[id]) return PLUGIN_HANDLED;
+	if(!IsPlayer_Alive(id)) return PLUGIN_HANDLED;
 
 	new key3 = (1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<4)|(1<<5)|(1<<6)|(1<<7)|(1<<8)|(1<<9);
 	
@@ -3948,19 +4108,15 @@ public radio(id)
 
 public radiocmd(id, key3)
 {
-	if(g_isDead[id]) return PLUGIN_HANDLED;
-	if(g_RadioTimer[id]) return PLUGIN_HANDLED;
+	if(!IsPlayer_Alive(id) || g_RadioTimer[id]) return PLUGIN_HANDLED;
 
 	new iReceiverTeam;
 	new iSenderTeam = get_member(id, m_iTeam);
 	new ResourcePath[32+(2*32)];
 
-	for(new i = 1; i <= maxplayer; i++)
+	for(new iArrayID = TotalPlayers_Count()-1, i; iArrayID >= 0; iArrayID--) //for(new i = 1; i <= maxplayer; i++)
 	{
-		if(!is_user_connected(i) || !is_user_valid(i))
-		{
-			continue;
-		}
+		i = Get_Array_ConnectedPlayers(iArrayID);
 		
 		iReceiverTeam = get_member(i, m_iTeam);
 
@@ -4194,7 +4350,10 @@ public Radio_Pre(pSender, szMsgID[], szMsgVerbose[]) {
 	new WeaponIdType:pGrenade = rg_get_user_weapon(pSender);
 	new ResourcePath[32+(2*32)];
 	
-	for(new i = 1; i <= maxplayer; i++) {
+	for(new iArrayID = TotalPlayers_Count()-1, i; iArrayID >= 0; iArrayID--) { //for(new i = 1; i <= maxplayer; i++) {
+
+		i = Get_Array_ConnectedPlayers(iArrayID);
+
 		if(get_member(i, m_bIgnoreRadio)) {
 			continue;
 		}
@@ -4285,13 +4444,13 @@ public Radio_Pre(pSender, szMsgID[], szMsgVerbose[]) {
 
 public fw_AddToFullPack_Post(es, e, ent, host, hostflags, player, pSet)
 {
-	if(!is_user_connected(host) || !is_user_valid(host))
+	if(!IsPlayer_Connected(host) || !is_user_valid(host))
 		return FMRES_IGNORED;
 
+	if(!IsPlayer_Connected(host))
+		return FMRES_IGNORED;
+		
 	if(is_nullent2(ent))//!is_entity(ent))
-		return FMRES_IGNORED;
-
-	if(g_isDead[host])
 		return FMRES_IGNORED;
 
 	if(g_Zoom[host] == 1)
@@ -4378,39 +4537,54 @@ public ViewBodySwitch(pPlayer, iValue)
 
 public CGrenade_DefuseBombStart(const this, const player)
 {
-	new team;
+	//new team;
 	
 	if(get_gametime() > defuse_sesengel)
 	{
-		for(new id = 1; id <= maxplayer; id++)
+		for(new iArrayID = TotalCT_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 		{
-			if(!is_user_valid(id) || !is_user_connected(id)) continue;
+			clientIndex = Get_Array_CTPlayers(iArrayID);
+
+			PlaySound(clientIndex, CT_DEFUSING_BOMB[g_PlayerAgent[player][1]]);
+		}
+
+		/*for(new id = 1; id <= maxplayer; id++)
+		{
+			if(!is_user_valid(id) || !IsPlayer_Connected(id)) continue;
 
 			team = get_member(id, m_iTeam);
 
 			if(any:team != TEAM_CT) continue;
 			
 			PlaySound(id, CT_DEFUSING_BOMB[g_PlayerAgent[player][1]]);
-		}
+		}*/
 		defuse_sesengel = get_gametime() + 5.0;
 	}
 }
 
-public bomb_planting(planter) {
-	new team;
+public bomb_planting(planter)
+{
+	//new team;
 	
 	if(get_gametime() > planting_sesengel)
 	{
-		for(new id = 1; id <= maxplayer; id++)
+		for(new iArrayID = TotalT_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 		{
-			if(!is_user_valid(id) || !is_user_connected(id)) continue;
+			clientIndex = Get_Array_TPlayers(iArrayID);
+
+			PlaySound(clientIndex, T_PLANTINGBOMB[g_PlayerAgent[planter][0]]);
+		}
+
+		/*for(new id = 1; id <= maxplayer; id++)
+		{
+			if(!is_user_valid(id) || !IsPlayer_Connected(id)) continue;
 
 			team = get_member(id, m_iTeam);
 
 			if(any:team != TEAM_TERRORIST) continue;
 			
 			PlaySound(id, T_PLANTINGBOMB[g_PlayerAgent[planter][0]]);
-		}
+		}*/
 		planting_sesengel = get_gametime() + 5.0;
 	}
 }
@@ -4441,13 +4615,20 @@ public RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 		default: g_win = 2;
 	}
 
-	for(new id = 1; id <= maxplayer; id++)
+	for(new iArrayID = TotalPlayers_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 	{
-		if(!is_user_connected(id) || !is_user_valid(id))
+		clientIndex = Get_Array_ConnectedPlayers(iArrayID);
+
+		PlaySound(clientIndex, ROUND_SOUNDS[2]);
+	}
+
+	/*for(new id = 1; id <= maxplayer; id++)
+	{
+		if(!IsPlayer_Connected(id) || !is_user_valid(id))
 			continue;
 		
 		PlaySound(id, ROUND_SOUNDS[2]);
-	}
+	}*/
 
 	static tur; tur = get_member_game(m_iNumCTWins)+get_member_game(m_iNumTerroristWins);
 
@@ -4489,10 +4670,52 @@ public WarmupEnd()
 
 public takimlari_degis()
 {
-	new kayit, kayit2, team;
-	for(new id = 1; id <= maxplayer; id++)
+	new kayit, kayit2, iArrayID2;
+	for(new iArrayID = TotalAlive_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 	{
-		if(!is_user_connected(id) || !is_user_valid(id))
+		clientIndex = Get_ArrayValue_AlivePlayers(iArrayID);
+
+		switch(get_member(clientIndex, m_iTeam))
+		{
+			case TEAM_TERRORIST:
+			{
+				set_entvar(clientIndex, var_maxspeed, 1.0);
+				rg_set_user_team(clientIndex, TEAM_CT);
+
+				if((iArrayID2 = ArrayFindValue(g_ArrayTPlayers, clientIndex)) != -1)
+				{
+					ArrayDeleteItem(g_ArrayTPlayers, iArrayID2);
+					g_iTotalT--;
+				}
+
+				if(ArrayFindValue(g_ArrayCTPlayers, clientIndex) == -1)
+				{
+					ArrayPushCell(g_ArrayCTPlayers, clientIndex);
+					g_iTotalCT++;
+				}
+			}
+			case TEAM_CT:
+			{
+				set_entvar(clientIndex, var_maxspeed, 1.0);
+				rg_set_user_team(clientIndex, TEAM_TERRORIST);
+				if((iArrayID2 = ArrayFindValue(g_ArrayCTPlayers, clientIndex)) != -1)
+				{
+					ArrayDeleteItem(g_ArrayCTPlayers, iArrayID2);
+					g_iTotalCT--;
+				}
+
+				if(ArrayFindValue(g_ArrayTPlayers, clientIndex) == -1)
+				{
+					ArrayPushCell(g_ArrayTPlayers, clientIndex);
+					g_iTotalT++;
+				}
+			}
+		}
+	}
+
+	/*for(new id = 1; id <= maxplayer; id++)
+	{
+		if(!IsPlayer_Connected(id) || !is_user_valid(id))
 			continue;
 		
 		team = get_member(id, m_iTeam);
@@ -4505,7 +4728,7 @@ public takimlari_degis()
 		{
 			rg_set_user_team(id, TEAM_TERRORIST);
 		}
-	}
+	}*/
 
 	client_print_color(0, print_team_red, "^1[^4%s^1] ^3Takimlar Degistiriliyor", TAG);
 	client_print_color(0, print_team_red, "^1[^4%s^1] ^3Takimlar Degistiriliyor", TAG);
@@ -4529,13 +4752,20 @@ public Message_TextMsg( const MsgId, const MsgDest, const id )
 		set_task(float(get_pcvar_num(pointnum) - 2), "C4_ExplodeSound", 2000);
 		set_task(float(get_pcvar_num(pointnum) - 12), "C4_ExplodeSound2", 2000);
 
-		for(new id = 1; id <= maxplayer; id++)
+		for(new iArrayID = TotalPlayers_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 		{
-			if(!is_user_connected(id) || !is_user_valid(id))
+			clientIndex = Get_Array_ConnectedPlayers(iArrayID);
+
+			PlaySound(clientIndex, "csgonew4/bombplanted.mp3");
+		}
+
+		/*for(new id = 1; id <= maxplayer; id++)
+		{
+			if(!IsPlayer_Connected(id) || !is_user_valid(id))
 				continue;
 			
 			PlaySound(id, "csgonew4/bombplanted.mp3");
-		}
+		}*/
 	}
 
 	return PLUGIN_CONTINUE;
@@ -4543,24 +4773,38 @@ public Message_TextMsg( const MsgId, const MsgDest, const id )
 
 public C4_ExplodeSound()
 {
-	for(new id = 1; id <= maxplayer; id++)
+	for(new iArrayID = TotalPlayers_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 	{
-		if(!is_user_connected(id) || !is_user_valid(id))
+		clientIndex = Get_Array_ConnectedPlayers(iArrayID);
+
+		PlaySound(clientIndex, "csgonew4/arm_bomb.mp3");
+	}
+
+	/*for(new id = 1; id <= maxplayer; id++)
+	{
+		if(!IsPlayer_Connected(id) || !is_user_valid(id))
 			continue;
 		
 		PlaySound(id, "csgonew4/arm_bomb.mp3");
-	}
+	}*/
 }
 
 public C4_ExplodeSound2()
 {
-	for(new id = 1; id <= maxplayer; id++)
+	for(new iArrayID = TotalPlayers_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 	{
-		if(!is_user_connected(id) || !is_user_valid(id))
+		clientIndex = Get_Array_ConnectedPlayers(iArrayID);
+
+		PlaySound(clientIndex, "csgonew4/bombtenseccount.mp3");
+	}
+
+	/*for(new id = 1; id <= maxplayer; id++)
+	{
+		if(!IsPlayer_Connected(id) || !is_user_valid(id))
 			continue;
 		
 		PlaySound(id, "csgonew4/bombtenseccount.mp3");
-	}
+	}*/
 }
 
 public PlayerBlind(const index, const inflictor, const attacker, const Float:fadeTime, const Float:fadeHold, const alpha, Float:color[3])
@@ -4654,6 +4898,126 @@ public CBasePlayer_TakeDamage(const victim, pevInflictor, pevAttacker, Float:flD
 public plugin_natives()
 {
 	register_native("GloveBodyID", "GetGloveBodyID", 1);
+
+	g_ArrayConnectedPlayers = ArrayCreate(1);
+	g_ArrayAlivePlayers = ArrayCreate(1);
+	g_ArrayDeadPlayers = ArrayCreate(1);
+	g_ArrayCTPlayers = ArrayCreate(1);
+	g_ArrayTPlayers = ArrayCreate(1);
+}
+
+public TotalAlive_Count()
+{
+	return g_iTotalAlive;
+}
+
+public TotalDead_Count()
+{
+	return g_iTotalDead;
+}
+
+public TotalPlayers_Count()
+{
+	return g_iTotalPlayer;
+}
+
+public TotalCT_Count()
+{
+	return g_iTotalCT;
+}
+
+public TotalT_Count()
+{
+	return g_iTotalT;
+}
+
+public Get_Array_CTPlayers(const iArrayID)
+{
+	if(iArrayID >= 0 && iArrayID < g_iTotalCT)
+	{
+		return ArrayGetCell(g_ArrayCTPlayers, iArrayID);
+	}
+
+	return -1;
+}
+
+public Get_Array_TPlayers(const iArrayID)
+{
+	if(iArrayID >= 0 && iArrayID < g_iTotalT)
+	{
+		return ArrayGetCell(g_ArrayTPlayers, iArrayID);
+	}
+
+	return -1;
+}
+
+public Get_Array_ConnectedPlayers(const iArrayID)
+{
+	if(iArrayID >= 0 && iArrayID < g_iTotalPlayer)
+	{
+		return ArrayGetCell(g_ArrayConnectedPlayers, iArrayID);
+	}
+
+	return -1;
+}
+
+public Get_ArrayValue_AlivePlayers(const iArrayID)
+{
+	if(iArrayID >= 0 && iArrayID < g_iTotalAlive)
+	{
+		return ArrayGetCell(g_ArrayAlivePlayers, iArrayID);
+	}
+
+	return -1;
+}
+
+public Get_ArrayValue_DeadPlayers(const iArrayID)
+{
+	if(iArrayID >= 0 && iArrayID < g_iTotalDead)
+	{
+		return ArrayGetCell(g_ArrayDeadPlayers, iArrayID);
+	}
+
+	return -1;
+}
+
+public bool:IsPlayer_Connected(const clientIndex)
+{
+	if(clientIndex > 0 && clientIndex <= MAX_PLAYERS) 
+		return g_bPlayerConnected[clientIndex];
+
+	return false;
+}
+
+public bool:IsPlayer_Alive(const clientIndex)
+{
+	if(clientIndex > 0 && clientIndex <= MAX_PLAYERS) 
+		return g_bPlayerAlive[clientIndex];
+
+	return false;
+}
+
+public bool:is_user_valid(const clientIndex)
+{
+	if(clientIndex > 0 && clientIndex <= MAX_PLAYERS)
+		return true;
+	
+	return false;
+}
+
+public GameLog(const Message[], any:...)
+{
+	new szText[128]; vformat(szText, charsmax(szText), Message, 2);
+	server_print("Log: %s", szText);
+}
+
+public Destroy_Arrays()
+{
+	ArrayDestroy(g_ArrayConnectedPlayers);
+	ArrayDestroy(g_ArrayAlivePlayers);
+	ArrayDestroy(g_ArrayDeadPlayers);
+	ArrayDestroy(g_ArrayCTPlayers);
+	ArrayDestroy(g_ArrayTPlayers);
 }
 
 public GetGloveBodyID(id)
@@ -4673,7 +5037,7 @@ public SPEC_OBS_IN_EYE(iTaskData[], iPlayer)
 
 public plugin_precache()
 {
-	//register_forward(FM_PrecacheModel, "Forward_PrecacheModel");	//Unprecache old viewmodels
+	register_forward(FM_PrecacheModel, "Forward_PrecacheModel");	//Unprecache old viewmodels
 	register_forward(FM_PrecacheSound, "Forward_PrecacheSound");
 
 	new i, buffer[32+(2*32)];
@@ -5024,9 +5388,24 @@ stock UTIL_SendWeaponAnim(pPlayer, iAnim, iBody)
 	if(get_entvar(pPlayer, var_iuser1)) 
 		return;
 
-	for(new id = 1; id <= maxplayer; id++)
+	for(new iArrayID = TotalDead_Count()-1, clientIndex; iArrayID >= 0; iArrayID--)
 	{
-		if(!is_user_connected(id) || !g_isDead[id] || get_entvar(id, var_iuser2) != pPlayer) // get_entvar(id, var_iuser1) != OBS_IN_EYE ||
+		clientIndex = Get_ArrayValue_DeadPlayers(iArrayID);
+
+		if(get_entvar(clientIndex, var_iuser2) != pPlayer || get_entvar(clientIndex, var_iuser1) != OBS_IN_EYE)
+			continue;
+		
+		set_entvar(clientIndex, var_weaponanim, iAnim);
+
+		message_begin(MSG_ONE, SVC_WEAPONANIM, _, clientIndex);
+		write_byte(iAnim);
+		write_byte(iBody);
+		message_end();
+	}
+
+	/*for(new id = 1; id <= maxplayer; id++)
+	{
+		if(!IsPlayer_Connected(id) || IsPlayer_Alive(id) || get_entvar(id, var_iuser2) != pPlayer) // get_entvar(id, var_iuser1) != OBS_IN_EYE ||
 			continue;
 
 		set_entvar(id, var_weaponanim, iAnim);
@@ -5035,13 +5414,14 @@ stock UTIL_SendWeaponAnim(pPlayer, iAnim, iBody)
 		write_byte(iAnim);
 		write_byte(iBody);
 		message_end();
-	}
+	}*/
 }
 
 stock WeaponSkinID(id, iEntity)
 {
-	new SkinID;
-	switch(WeaponIdType:rg_get_weapon(iEntity))
+	static SkinID, WeaponIdType:weapon;
+	weapon = rg_get_weapon(iEntity);
+	switch(weapon)
 	{
 		case WEAPON_AK47: SkinID = 0;
 		case WEAPON_AWP: SkinID = 1;
@@ -5077,9 +5457,10 @@ stock GetBodyIndex(id, glove, skin)
 
 stock GetWeaponInspect(iEntity)
 {
-	static InspectAnim, id;
+	static InspectAnim, id, WeaponIdType:weapon;
+	weapon = rg_get_weapon(iEntity);
 
-	switch(WeaponIdType:rg_get_weapon(iEntity))
+	switch(weapon)
 	{
 		case WEAPON_P228, WEAPON_M3: InspectAnim = 7;
 		case WEAPON_SCOUT, WEAPON_M249: InspectAnim = 5;
@@ -5122,9 +5503,10 @@ stock GetWeaponInspect(iEntity)
 
 stock GetWeaponDrawAnim(iEntity)
 {
-	static DrawAnim, id;
-	
-	switch(WeaponIdType:rg_get_weapon(iEntity))
+	static DrawAnim, id, WeaponIdType:weapon;
+	weapon = rg_get_weapon(iEntity);
+
+	switch(weapon)
 	{
 		case WEAPON_P228, WEAPON_M3: DrawAnim = 6;
 		case WEAPON_SCOUT, WEAPON_M249: DrawAnim = 4;
@@ -5313,46 +5695,11 @@ stock GetRandomAlive(target_index)
 	
 	for (id = 1; id <= maxplayer; id++)
 	{
-		if (!g_isDead[id])
+		if (IsPlayer_Alive(id))
 			iAlive++;
 		
 		if (iAlive == target_index)
 			return id;
 	}
 	return -1;
-}
-
-stock Canli_kisiler()
-{
-	new iAlive, id;
-	
-	for (id = 1; id <= maxplayer; id++)
-	{
-		if (is_user_valid(id) && is_user_connected(id) && !g_isDead[id])
-			iAlive++;
-	}
-	
-	return iAlive;
-}
-
-stock GetPlayingCount(const Team)
-{
-	new iPlaying, id, team;
-	
-	for (id = 1; id <= maxplayer; id++)
-	{
-		if (!is_user_valid(id) || !is_user_connected(id) || g_isDead[id])
-			continue;
-		
-		team = get_member(id, m_iTeam);
-		
-		if (any:team != TEAM_SPECTATOR && any:team != TEAM_UNASSIGNED)
-		{
-			if(Team == 0 && any:team == TEAM_TERRORIST) iPlaying++;
-			else if(Team == 1 && any:team == TEAM_CT) iPlaying++;
-			else if(Team == 2) iPlaying++;
-		}
-	}
-	
-	return iPlaying;
 }
